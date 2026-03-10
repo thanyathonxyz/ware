@@ -19,6 +19,12 @@ WindUI:SetTheme("SpectreTheme")
 local RS = game:GetService("ReplicatedStorage")
 local Remotes = RS:WaitForChild("Remotes", 10)
 
+if not Remotes then
+    warn("SpectreWare: Remotes folder not found in ReplicatedStorage!")
+else
+    print("SpectreWare: Remotes folder found.")
+end
+
 -- === HELPER: EquipBestCards ===
 local cachedSlotController = nil
 local function EquipBestCards()
@@ -47,7 +53,11 @@ local Config = {
     SelectedPacks = {["Gold"] = true},
     AutoBuyPack = false,
     AutoOpenPack = false,
-    AntiAFK = false
+    AntiAFK = false,
+    AutoSpinWheel = false,
+    AutoClaimFreeWheel = false,
+    AutoCraftItems = {},
+    AutoBuyGemItems = {}
 }
 
 -- Check if individual feature or SmartAuto is enabled
@@ -97,6 +107,9 @@ end)
 local Tabs = {
     Home = Window:Tab({ Title = "Dashboard", Icon = "layout-dashboard" }),
     Farm = Window:Tab({ Title = "Automation", Icon = "zap" }),
+    Spin = Window:Tab({ Title = "Spin Wheel", Icon = "refresh-cw" }),
+    Craft = Window:Tab({ Title = "Craft Shop", Icon = "hammer" }),
+    GemShop = Window:Tab({ Title = "Gem Shop", Icon = "gem" }),
     Packs = Window:Tab({ Title = "Packs & Crates", Icon = "package-open" }),
     Sell = Window:Tab({ Title = "Auto Sell", Icon = "trash-2" }),
     Misc = Window:Tab({ Title = "Local Player", Icon = "user-cog" }),
@@ -217,6 +230,179 @@ ActionSec:Button({
             WindUI:Notify({ Title = "Action", Content = "Attempted Rebirth", Duration = 2 })
         end
     end 
+})
+
+-- == SPIN TAB ==
+local SpinSec = Tabs.Spin:Section({ Title = "Spin Wheel Automation", Opened = true })
+
+SpinSec:Toggle({ 
+    Flag = "Tgl_AutoSpinWheel", 
+    Title = "Auto Spin Wheel", 
+    Desc = "Continuously spin the wheel.",
+    Default = false, 
+    Callback = function(s) Config.AutoSpinWheel = s end 
+})
+
+SpinSec:Toggle({ 
+    Flag = "Tgl_AutoClaimFreeWheel", 
+    Title = "Auto Claim Free Wheel", 
+    Desc = "Automatically claim free wheel spins.",
+    Default = false, 
+    Callback = function(s) Config.AutoClaimFreeWheel = s end 
+})
+
+local SpinManualSec = Tabs.Spin:Section({ Title = "Manual Actions", Opened = true })
+
+SpinManualSec:Button({ 
+    Title = "Spin Wheel Once", 
+    Desc = "Manually spin the wheel.",
+    Callback = function() 
+        pcall(function()
+            local args = { "spin" }
+            game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
+        end)
+    end 
+})
+
+SpinManualSec:Button({ 
+    Title = "Claim Free Spin Once", 
+    Desc = "Manually claim free wheel spin.",
+    Callback = function() 
+        pcall(function()
+            local args = { "claim_free" }
+            game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
+        end)
+    end 
+})
+
+-- == CRAFT SHOP TAB ==
+local CraftSec = Tabs.Craft:Section({ Title = "Auto Crafting", Opened = true })
+
+CraftSec:Paragraph({
+    Title = "Crafting Automation",
+    Desc = "Automatically craft your desired items as soon as you have enough materials."
+})
+
+local CraftableItemsList = {"Golden Boot", "Champions League", "Ballon d'Or"}
+
+for _, itemName in ipairs(CraftableItemsList) do
+    CraftSec:Toggle({
+        Flag = "Tgl_Craft_" .. string.gsub(itemName, " ", ""),
+        Title = "Auto Craft: " .. itemName,
+        Desc = "Automatically crafts " .. itemName .. " when possible.",
+        Default = false,
+        Callback = function(state)
+            Config.AutoCraftItems[itemName] = state
+        end
+    })
+end
+
+local CraftManualSec = Tabs.Craft:Section({ Title = "Manual Actions", Opened = false })
+
+for _, itemName in ipairs(CraftableItemsList) do
+    CraftManualSec:Button({
+        Title = "Craft " .. itemName .. " Once",
+        Desc = "Manually craft one " .. itemName .. ".",
+        Callback = function()
+            if Remotes and Remotes:FindFirstChild("CraftTrophy") then
+                pcall(function()
+                    Remotes.CraftTrophy:FireServer(itemName)
+                end)
+                WindUI:Notify({ Title = "Crafting", Content = "Attempted to craft: " .. itemName, Duration = 2 })
+            else
+                WindUI:Notify({ Title = "Error", Content = "CraftTrophy remote not found!", Duration = 3 })
+            end
+        end
+    })
+end
+
+-- == GEM SHOP TAB ==
+local GemSec = Tabs.GemShop:Section({ Title = "Auto Gem Shop", Opened = true })
+
+GemSec:Paragraph({
+    Title = "Gem Shop Automation",
+    Desc = "Automatically purchase your desired items using Gems from the Gem Shop."
+})
+
+local GemShopItemsList = {
+    {Id = "AutoEquipBest", Display = "Auto Equip Best"},
+    {Id = "AutoSkip", Display = "Auto Skip"},
+    {Id = "ExtraBankSlots", Display = "Extra Bank Slots"},
+    {Id = "Inventory500", Display = "Inventory +500"}
+}
+
+for _, item in ipairs(GemShopItemsList) do
+    GemSec:Toggle({
+        Flag = "Tgl_Gem_" .. item.Id,
+        Title = "Auto Buy: " .. item.Display,
+        Desc = "Automatically buy " .. item.Display .. " when it is affordable.",
+        Default = false,
+        Callback = function(state)
+            Config.AutoBuyGemItems[item.Id] = state
+        end
+    })
+end
+
+GemSec:Toggle({
+    Flag = "Tgl_Gem_LuckyItem",
+    Title = "Auto Buy: Today's Lucky Item",
+    Desc = "Automatically checks the rotating lucky item in the shop and buys it.",
+    Default = false,
+    Callback = function(state)
+        Config.AutoBuyGemItems["LuckyItem"] = state
+    end
+})
+
+local GemManualSec = Tabs.GemShop:Section({ Title = "Manual Actions", Opened = false })
+
+for _, item in ipairs(GemShopItemsList) do
+    GemManualSec:Button({
+        Title = "Buy " .. item.Display .. " Once",
+        Desc = "Manually buy one " .. item.Display .. ".",
+        Callback = function()
+            print("SpectreWare: Attempting to buy " .. item.Id)
+            local targetRemote = Remotes:FindFirstChild("BuyGemShopItem")
+            if targetRemote then
+                local success, err = pcall(function()
+                    targetRemote:FireServer(item.Id)
+                end)
+                if success then
+                    print("SpectreWare: Successfully fired BuyGemShopItem for " .. item.Id)
+                    WindUI:Notify({ Title = "Gem Shop", Content = "Attempted to buy: " .. item.Display, Duration = 2 })
+                else
+                    warn("SpectreWare: Error firing remote: " .. tostring(err))
+                end
+            else
+                warn("SpectreWare: BuyGemShopItem remote not found in Remotes folder!")
+                WindUI:Notify({ Title = "Error", Content = "BuyGemShopItem remote not found!", Duration = 3 })
+            end
+        end
+    })
+end
+
+GemManualSec:Button({
+    Title = "Buy Today's Lucky Item Once",
+    Desc = "Reads the current lucky item name from the GUI and buys it.",
+    Callback = function()
+        if Remotes and Remotes:FindFirstChild("BuyGemShopItem") then
+            local fired = false
+            pcall(function()
+                local pgui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui", 2)
+                local itemName = pgui.GemShop.Frame.Main.ScrollingFrame.LuckyItem.Item.Title.Text
+                if itemName and itemName ~= "" then
+                    Remotes.BuyGemShopItem:FireServer(itemName)
+                    WindUI:Notify({ Title = "Gem Shop", Content = "Attempted to buy Lucky Item: " .. itemName, Duration = 2 })
+                    fired = true
+                end
+            end)
+            
+            if not fired then
+                WindUI:Notify({ Title = "Gem Shop Error", Content = "Could not find the UI elements! Please open the Gem Shop manually first so the game loads the item names.", Duration = 4 })
+            end
+        else
+            WindUI:Notify({ Title = "Error", Content = "BuyGemShopItem remote not found!", Duration = 3 })
+        end
+    end
 })
 
 -- == PACKS TAB ==
@@ -357,6 +543,61 @@ task.spawn(function()
         -- 6. Rebirth
         if isOn("AutoRebirth") and Remotes and Remotes:FindFirstChild("Rebirth") then
             pcall(function() Remotes.Rebirth:FireServer() end)
+        end
+
+        -- 7. Spin Wheel
+        if isOn("AutoSpinWheel") then
+            pcall(function()
+                local args = { "spin" }
+                game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
+            end)
+        end
+
+        -- 8. Claim Free Wheel
+        if isOn("AutoClaimFreeWheel") then
+            pcall(function()
+                local args = { "claim_free" }
+                game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
+            end)
+        end
+
+        -- 9. Auto Craft via Remote
+        if Remotes and Remotes:FindFirstChild("CraftTrophy") then
+            for itemName, isCrafting in pairs(Config.AutoCraftItems) do
+                if isCrafting then
+                    pcall(function()
+                        Remotes.CraftTrophy:FireServer(itemName)
+                    end)
+                end
+            end
+        end
+
+        -- 10. Auto Buy Gem Shop Items
+        if Remotes and Remotes:FindFirstChild("BuyGemShopItem") then
+            -- 10.1 Static Items
+            local gemItems = {
+                {Id = "AutoEquipBest", Display = "Auto Equip Best"},
+                {Id = "AutoSkip", Display = "Auto Skip"},
+                {Id = "ExtraBankSlots", Display = "Extra Bank Slots"},
+                {Id = "Inventory500", Display = "Inventory +500"}
+            }
+            for _, item in ipairs(gemItems) do
+                if Config.AutoBuyGemItems[item.Id] then
+                    pcall(function()
+                        Remotes.BuyGemShopItem:FireServer(item.Id)
+                    end)
+                end
+            end
+
+            -- 10.2 Dynamic Lucky Item
+            if Config.AutoBuyGemItems["LuckyItem"] then
+                pcall(function()
+                    local targetText = game:GetService("Players").LocalPlayer.PlayerGui.GemShop.Frame.Main.ScrollingFrame.LuckyItem.Item.Title.Text
+                    if targetText and targetText ~= "" then
+                        Remotes.BuyGemShopItem:FireServer(targetText)
+                    end
+                end)
+            end
         end
     end
 end)
