@@ -69,7 +69,7 @@ end
 local Window = WindUI:CreateWindow({
     Title = "SpectreWare | Spin A Soccer",
     Icon = "sparkles", 
-    Author = "Tiger",
+    Author = "thanyathonxyz",
     Folder = "SpectreSpinAS_Config",
     Size = UDim2.fromOffset(600, 480),
     Transparent = true,
@@ -280,10 +280,10 @@ local CraftSec = Tabs.Craft:Section({ Title = "Auto Crafting", Opened = true })
 
 CraftSec:Paragraph({
     Title = "Crafting Automation",
-    Desc = "Automatically craft your desired items as soon as you have enough materials."
+    Desc = "Automatically craft your desired items. New shop items will be detected automatically in the background."
 })
 
-local CraftableItemsList = {"Golden Boot", "Champions League", "Ballon d'Or"}
+local CraftableItemsList = {"Golden Boot", "Champions League", "Ballon d'Or", "Eternal Crown"}
 
 for _, itemName in ipairs(CraftableItemsList) do
     CraftSec:Toggle({
@@ -305,16 +305,30 @@ for _, itemName in ipairs(CraftableItemsList) do
         Desc = "Manually craft one " .. itemName .. ".",
         Callback = function()
             if Remotes and Remotes:FindFirstChild("CraftTrophy") then
-                pcall(function()
-                    Remotes.CraftTrophy:FireServer(itemName)
-                end)
+                pcall(function() Remotes.CraftTrophy:FireServer(itemName) end)
                 WindUI:Notify({ Title = "Crafting", Content = "Attempted to craft: " .. itemName, Duration = 2 })
-            else
-                WindUI:Notify({ Title = "Error", Content = "CraftTrophy remote not found!", Duration = 3 })
             end
         end
     })
 end
+
+-- Silent Background Scanner for new items
+task.spawn(function()
+    while true do
+        task.wait(10) -- Scan every 10 seconds
+        pcall(function()
+            local scrollFrame = game:GetService("Players").LocalPlayer.PlayerGui.CraftShop.Frame.Items.ScrollingFrame
+            for _, item in ipairs(scrollFrame:GetChildren()) do
+                if item:IsA("Frame") and item:FindFirstChild("PurchaseSection") then
+                    if not table.find(CraftableItemsList, item.Name) then
+                        table.insert(CraftableItemsList, item.Name)
+                        -- New item found, the background loop will now handle it if it's in Config.AutoCraftItems
+                    end
+                end
+            end
+        end)
+    end
+end)
 
 -- == GEM SHOP TAB ==
 local GemSec = Tabs.GemShop:Section({ Title = "Auto Gem Shop", Opened = true })
@@ -408,19 +422,19 @@ GemManualSec:Button({
 -- == PACKS TAB ==
 local PackSec = Tabs.Packs:Section({ Title = "Packs Configuration", Opened = true })
 
+local FullPackList = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega", "Genesis", "Abyssal"}
+
 PackSec:Dropdown({
     Flag = "Drop_SelectPacks",
     Title = "Select Target Packs",
     Desc = "Choose which packs to buy and open.",
-    Values = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven"},
+    Values = FullPackList,
     Value = {"Gold"},
     Multi = true,
     Callback = function(selected)
         local newSelections = {}
         if type(selected) == "table" then
-            for _, pack in ipairs(selected) do
-                newSelections[pack] = true
-            end
+            for _, pack in ipairs(selected) do newSelections[pack] = true end
         elseif type(selected) == "string" then
             newSelections[selected] = true
         end
