@@ -69,7 +69,7 @@ end
 local Window = WindUI:CreateWindow({
     Title = "SpectreWare | Spin A Soccer",
     Icon = "sparkles", 
-    Author = "thanyathonxyz",
+    Author = "Tiger",
     Folder = "SpectreSpinAS_Config",
     Size = UDim2.fromOffset(600, 480),
     Transparent = true,
@@ -422,7 +422,7 @@ GemManualSec:Button({
 -- == PACKS TAB ==
 local PackSec = Tabs.Packs:Section({ Title = "Packs Configuration", Opened = true })
 
-local FullPackList = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega", "Genesis", "Abyssal"}
+local FullPackList = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega", "Genesis", "Abyssal", "Enigma","Oracle"}
 
 PackSec:Dropdown({
     Flag = "Drop_SelectPacks",
