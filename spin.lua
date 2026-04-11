@@ -422,7 +422,7 @@ GemManualSec:Button({
 -- == PACKS TAB ==
 local PackSec = Tabs.Packs:Section({ Title = "Packs Configuration", Opened = true })
 
-local FullPackList = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega", "Genesis", "Abyssal", "Enigma","Oracle"}
+local FullPackList = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega", "Genesis", "Abyssal", "Enigma","Oracle","Wither","Bloom"}
 
 PackSec:Dropdown({
     Flag = "Drop_SelectPacks",
