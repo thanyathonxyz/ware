@@ -1,31 +1,48 @@
+--[[
+    SpectreWare | Spin A Soccer
+    WindUI Edition — with auto-detect & stability improvements
+]]
+
+-- ============================================
+-- 1) LOAD LIBRARY
+-- ============================================
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
--- ===== SPECTRE THEME =====
+-- ============================================
+-- 2) SPECTRE THEME
+-- ============================================
 WindUI:AddTheme({
     Name = "SpectreTheme",
     Accent = WindUI:Gradient({
-        ["0"] = { Color = Color3.fromHex("#8b5cf6"), Transparency = 0 }, -- Violet 500
-        ["100"] = { Color = Color3.fromHex("#5b21b6"), Transparency = 0 } -- Violet 800
+        ["0"]   = { Color = Color3.fromHex("#8b5cf6"), Transparency = 0 },
+        ["100"] = { Color = Color3.fromHex("#5b21b6"), Transparency = 0 },
     }, { Rotation = 45 }),
-    Outline = Color3.fromHex("#2e2a36"),
-    Text = Color3.fromHex("#f8fafc"),
+    Outline     = Color3.fromHex("#2e2a36"),
+    Text        = Color3.fromHex("#f8fafc"),
     Placeholder = Color3.fromHex("#94a3b8"),
-    Background = Color3.fromHex("#0f0c16"), 
-    Button = Color3.fromHex("#1e1a29"),
-    Icon = Color3.fromHex("#c4b5fd"),
+    Background  = Color3.fromHex("#0f0c16"),
+    Button      = Color3.fromHex("#1e1a29"),
+    Icon        = Color3.fromHex("#c4b5fd"),
 })
 WindUI:SetTheme("SpectreTheme")
 
+-- ============================================
+-- 3) CACHED SERVICES
+-- ============================================
+local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
-local Remotes = RS:WaitForChild("Remotes", 10)
+local LocalPlayer = Players.LocalPlayer
 
+local Remotes = RS:WaitForChild("Remotes", 10)
 if not Remotes then
     warn("SpectreWare: Remotes folder not found in ReplicatedStorage!")
 else
     print("SpectreWare: Remotes folder found.")
 end
 
--- === HELPER: EquipBestCards ===
+-- ============================================
+-- 4) HELPER: EquipBestCards
+-- ============================================
 local cachedSlotController = nil
 local function EquipBestCards()
     if not cachedSlotController then
@@ -41,7 +58,23 @@ local function EquipBestCards()
     end
 end
 
--- === CONFIG VARIABLES ===
+-- ============================================
+-- 5) SAFE REMOTE FIRE HELPER
+-- ============================================
+local function fireRemote(remoteName, ...)
+    if not Remotes then return false end
+    local remote = Remotes:FindFirstChild(remoteName)
+    if not remote then return false end
+    local ok, err = pcall(remote.FireServer, remote, ...)
+    if not ok then
+        warn("SpectreWare: Failed to fire " .. remoteName .. ": " .. tostring(err))
+    end
+    return ok
+end
+
+-- ============================================
+-- 6) CONFIG VARIABLES
+-- ============================================
 local Config = {
     SmartAuto = false,
     LoopDelay = 1,
@@ -50,25 +83,186 @@ local Config = {
     AutoClaimGems = false,
     AutoEquipBest = false,
     AutoRebirth = false,
-    SelectedPacks = {["Gold"] = true},
+    SelectedPacks = { ["Gold"] = true },
     AutoBuyPack = false,
     AutoOpenPack = false,
     AntiAFK = false,
     AutoSpinWheel = false,
     AutoClaimFreeWheel = false,
     AutoCraftItems = {},
-    AutoBuyGemItems = {}
+    AutoBuyGemItems = {},
+    AutoBuyGem = false,
 }
 
--- Check if individual feature or SmartAuto is enabled
 local function isOn(key)
     return Config.SmartAuto or Config[key]
 end
 
--- === WIND UI SETUP ===
+-- ============================================
+-- 7) UI LAYOUT FILTER HELPER
+-- ============================================
+local UI_IGNORE_CLASSES = {
+    UIListLayout = true, UIPadding = true, UICorner = true,
+    UIStroke = true, UIGridLayout = true, UITableLayout = true,
+    UIPageLayout = true, UISizeConstraint = true, UIScale = true,
+    UIAspectRatioConstraint = true, UITextSizeConstraint = true,
+    UIFlexItem = true, UIGradient = true,
+}
+
+local function IsUILayoutObject(obj)
+    return UI_IGNORE_CLASSES[obj.ClassName] ~= nil
+end
+
+-- ============================================
+-- 8) DYNAMIC PACK DETECTION
+--    Path: PlayerGui.PackShop.Frame.Main.ScrollingFrame.[PackName].PurchaseSection.Buy
+-- ============================================
+local KnownPacks = {}
+local PackDropdownRef = nil
+
+local function ScanForPacks()
+    local found = {}
+    pcall(function()
+        local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+        if not pgui then return end
+        local packShop = pgui:FindFirstChild("PackShop")
+        if not packShop then return end
+        local frame = packShop:FindFirstChild("Frame")
+        if not frame then return end
+        local main = frame:FindFirstChild("Main")
+        if not main then return end
+        local scrollFrame = main:FindFirstChild("ScrollingFrame")
+        if not scrollFrame then return end
+
+        for _, child in ipairs(scrollFrame:GetChildren()) do
+            if not IsUILayoutObject(child) then
+                local purchaseSection = child:FindFirstChild("PurchaseSection")
+                if purchaseSection and purchaseSection:FindFirstChild("Buy") then
+                    local name = child.Name
+                    if name and name ~= "" then
+                        found[name] = true
+                    end
+                end
+            end
+        end
+    end)
+    return found
+end
+
+local function UpdatePackList()
+    local scanned = ScanForPacks()
+    for name, _ in pairs(scanned) do
+        if not KnownPacks[name] then
+            KnownPacks[name] = true
+        end
+    end
+
+    local sorted = {}
+    for name, _ in pairs(KnownPacks) do
+        table.insert(sorted, name)
+    end
+    table.sort(sorted)
+
+    if PackDropdownRef then
+        pcall(function()
+            if PackDropdownRef.SetValues then
+                PackDropdownRef:SetValues(sorted)
+            elseif PackDropdownRef.Refresh then
+                PackDropdownRef:Refresh(sorted)
+            end
+        end)
+    end
+
+    return sorted
+end
+
+-- Seed with known packs as fallback
+local FallbackPacks = {
+    "Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary",
+    "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse",
+    "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega",
+    "Genesis", "Abyssal", "Enigma", "Oracle", "Wither", "Bloom", "Scarlet",
+}
+for _, p in ipairs(FallbackPacks) do
+    KnownPacks[p] = true
+end
+
+-- ============================================
+-- 9) DYNAMIC GEM SHOP DETECTION
+--    Path: PlayerGui.GemShop.Frame.Main.ScrollingFrame.[ItemName].BuyButton
+-- ============================================
+local KnownGemItems = {}
+local GemDropdownRef = nil
+
+local function ScanForGemItems()
+    local found = {}
+    pcall(function()
+        local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+        if not pgui then return end
+        local gemShop = pgui:FindFirstChild("GemShop")
+        if not gemShop then return end
+        local frame = gemShop:FindFirstChild("Frame")
+        if not frame then return end
+        local main = frame:FindFirstChild("Main")
+        if not main then return end
+        local scrollFrame = main:FindFirstChild("ScrollingFrame")
+        if not scrollFrame then return end
+
+        for _, child in ipairs(scrollFrame:GetChildren()) do
+            if not IsUILayoutObject(child) then
+                if child:FindFirstChild("BuyButton") then
+                    local name = child.Name
+                    if name and name ~= "" then
+                        found[name] = true
+                    end
+                end
+            end
+        end
+    end)
+    return found
+end
+
+local function UpdateGemShopList()
+    local scanned = ScanForGemItems()
+    for name, _ in pairs(scanned) do
+        if not KnownGemItems[name] then
+            KnownGemItems[name] = true
+        end
+    end
+
+    local sorted = {}
+    for name, _ in pairs(KnownGemItems) do
+        table.insert(sorted, name)
+    end
+    table.sort(sorted)
+
+    if GemDropdownRef then
+        pcall(function()
+            if GemDropdownRef.SetValues then
+                GemDropdownRef:SetValues(sorted)
+            elseif GemDropdownRef.Refresh then
+                GemDropdownRef:Refresh(sorted)
+            end
+        end)
+    end
+
+    return sorted
+end
+
+-- Seed with known gem items as fallback
+local FallbackGemItems = {
+    "AutoEquipBest", "AutoSkip", "ExtraBankSlots", "Inventory500",
+}
+for _, g in ipairs(FallbackGemItems) do
+    KnownGemItems[g] = true
+end
+
+-- ============================================
+-- 10) CREATE WINDOW
+-- ============================================
 local Window = WindUI:CreateWindow({
     Title = "SpectreWare | Spin A Soccer",
-    Icon = "sparkles", 
+    Icon = "sparkles",
     Author = "Tiger",
     Folder = "SpectreSpinAS_Config",
     Size = UDim2.fromOffset(600, 480),
@@ -86,9 +280,9 @@ local Window = WindUI:CreateWindow({
         Scale = 1,
         Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0, Color3.fromHex("#8b5cf6")),
-            ColorSequenceKeypoint.new(1, Color3.fromHex("#5b21b6"))
-        })
-    }
+            ColorSequenceKeypoint.new(1, Color3.fromHex("#5b21b6")),
+        }),
+    },
 })
 
 pcall(function()
@@ -99,201 +293,172 @@ pcall(function()
         StrokeThickness = 1,
         Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0, Color3.fromHex("#8b5cf6")),
-            ColorSequenceKeypoint.new(1, Color3.fromHex("#5b21b6"))
-        })
+            ColorSequenceKeypoint.new(1, Color3.fromHex("#5b21b6")),
+        }),
     })
 end)
 
+-- ============================================
+-- 11) TABS
+-- ============================================
 local Tabs = {
-    Home = Window:Tab({ Title = "Dashboard", Icon = "layout-dashboard" }),
-    Farm = Window:Tab({ Title = "Automation", Icon = "zap" }),
-    Spin = Window:Tab({ Title = "Spin Wheel", Icon = "refresh-cw" }),
-    Craft = Window:Tab({ Title = "Craft Shop", Icon = "hammer" }),
-    GemShop = Window:Tab({ Title = "Gem Shop", Icon = "gem" }),
-    Packs = Window:Tab({ Title = "Packs & Crates", Icon = "package-open" }),
-    Sell = Window:Tab({ Title = "Auto Sell", Icon = "trash-2" }),
-    Misc = Window:Tab({ Title = "Local Player", Icon = "user-cog" }),
-    Settings = Window:Tab({ Title = "Settings", Icon = "settings" })
+    Home     = Window:Tab({ Title = "Dashboard",      Icon = "layout-dashboard" }),
+    Farm     = Window:Tab({ Title = "Automation",      Icon = "zap" }),
+    Spin     = Window:Tab({ Title = "Spin Wheel",      Icon = "refresh-cw" }),
+    Craft    = Window:Tab({ Title = "Craft Shop",      Icon = "hammer" }),
+    GemShop  = Window:Tab({ Title = "Gem Shop",        Icon = "gem" }),
+    Packs    = Window:Tab({ Title = "Packs & Crates",  Icon = "package-open" }),
+    Sell     = Window:Tab({ Title = "Auto Sell",       Icon = "trash-2" }),
+    Misc     = Window:Tab({ Title = "Local Player",    Icon = "user-cog" }),
+    Settings = Window:Tab({ Title = "Settings",        Icon = "settings" }),
 }
 
--- == HOME TAB ==
+-- ============================================
+-- 12) DASHBOARD TAB
+-- ============================================
 local HomeSec = Tabs.Home:Section({ Title = "Welcome to SpectreWare", Opened = true })
 
 HomeSec:Paragraph({
     Title = "Welcome to SpectreWare",
-    Desc = "If you encounter any bugs or problems, you can contact us on Discord."
+    Desc  = "Spin A Soccer automation suite.\nIf you encounter any bugs, contact us on Discord.",
 })
 
-local SmartAutoSec = Tabs.Home:Section({ Title = "Quick Start", Opened = true })
+local QuickSec = Tabs.Home:Section({ Title = "Quick Start", Opened = true })
 
-SmartAutoSec:Toggle({
-    Flag = "Tgl_SmartAuto",
-    Title = "⚡ Smart Auto (All-in-One)",
-    Desc = "Automatically Collect Slots, Claim Gems, Buy & Open Packs, Equip cards, and Rebirth in one click.",
-    Default = false,
-    Callback = function(state) 
-        Config.SmartAuto = state 
+QuickSec:Toggle({
+    Flag     = "Tgl_SmartAuto",
+    Title    = "⚡ Smart Auto (All-in-One)",
+    Desc     = "Automatically Collect Slots, Claim Gems, Buy & Open Packs, Equip cards, and Rebirth in one click.",
+    Default  = false,
+    Callback = function(state)
+        Config.SmartAuto = state
         if state then
             WindUI:Notify({ Title = "Smart Auto", Content = "All-in-One automation enabled!", Duration = 3 })
         end
-    end
+    end,
 })
 
--- == FARM TAB ==
-local FarmSec = Tabs.Farm:Section({ Title = "Core Automation", Opened = true })
+-- ============================================
+-- 13) AUTOMATION TAB
+-- ============================================
+local FarmCoreSec = Tabs.Farm:Section({ Title = "Core Automation", Opened = true })
 
-FarmSec:Toggle({ 
-    Flag = "Tgl_AutoCollect", 
-    Title = "Auto Collect Slots", 
+FarmCoreSec:Toggle({
+    Flag = "Tgl_AutoCollect", Title = "Auto Collect Slots",
     Desc = "Continuously collect spins from slots.",
-    Default = false, 
-    Callback = function(s) Config.AutoCollect = s end 
+    Default = false, Callback = function(s) Config.AutoCollect = s end,
 })
-FarmSec:Toggle({ 
-    Flag = "Tgl_AutoClaimGems", 
-    Title = "Auto Claim Gems", 
+FarmCoreSec:Toggle({
+    Flag = "Tgl_AutoClaimGems", Title = "Auto Claim Gems",
     Desc = "Automatically collect gems from the index.",
-    Default = false, 
-    Callback = function(s) Config.AutoClaimGems = s end 
+    Default = false, Callback = function(s) Config.AutoClaimGems = s end,
 })
-FarmSec:Toggle({ 
-    Flag = "Tgl_AutoEquipBest", 
-    Title = "Auto Equip Best", 
-    Desc = "Always equip the highest stat cards actively.",
-    Default = false, 
-    Callback = function(s) Config.AutoEquipBest = s end 
+FarmCoreSec:Toggle({
+    Flag = "Tgl_AutoEquipBest", Title = "Auto Equip Best",
+    Desc = "Always equip the highest stat cards.",
+    Default = false, Callback = function(s) Config.AutoEquipBest = s end,
 })
-FarmSec:Toggle({ 
-    Flag = "Tgl_AutoRebirth", 
-    Title = "Auto Rebirth", 
+FarmCoreSec:Toggle({
+    Flag = "Tgl_AutoRebirth", Title = "Auto Rebirth",
     Desc = "Instantly rebirth when requirements are met.",
-    Default = false, 
-    Callback = function(s) Config.AutoRebirth = s end 
+    Default = false, Callback = function(s) Config.AutoRebirth = s end,
 })
 
-local DelaySec = Tabs.Farm:Section({ Title = "Performance Settings", Opened = true })
-DelaySec:Slider({ 
-    Flag = "Sld_LoopDelay", 
-    Title = "Automation Loop Delay", 
-    Desc = "Speed of the background tasks (Lower = Faster).",
-    Step = 0.5, 
-    Value = {Min = 0.5, Max = 5, Default = 1}, 
-    Callback = function(v) Config.LoopDelay = v end 
+local FarmPerfSec = Tabs.Farm:Section({ Title = "Performance Settings", Opened = true })
+
+FarmPerfSec:Slider({
+    Flag = "Sld_LoopDelay", Title = "Automation Loop Delay",
+    Desc = "Speed of background tasks (Lower = Faster).",
+    Step = 0.5, Value = { Min = 0.5, Max = 5, Default = 1 },
+    Callback = function(v) Config.LoopDelay = v end,
 })
-DelaySec:Slider({ 
-    Flag = "Sld_SlotAmount", 
-    Title = "Slots Target Amount", 
+FarmPerfSec:Slider({
+    Flag = "Sld_SlotAmount", Title = "Slots Target Amount",
     Desc = "Number of slots to cycle through when collecting.",
-    Step = 1, 
-    Value = {Min = 1, Max = 50, Default = 10}, 
-    Callback = function(v) Config.SlotAmount = v end 
+    Step = 1, Value = { Min = 1, Max = 50, Default = 10 },
+    Callback = function(v) Config.SlotAmount = v end,
 })
 
-local ActionSec = Tabs.Farm:Section({ Title = "Quick Actions", Opened = false })
-ActionSec:Button({ 
-    Title = "Collect Slots Once", 
-    Desc = "Manually trigger slot collection.",
+local FarmActionSec = Tabs.Farm:Section({ Title = "Quick Actions", Opened = false })
+
+FarmActionSec:Button({
+    Title = "Collect Slots Once", Desc = "Manually trigger slot collection.",
     Callback = function()
         for i = 1, Config.SlotAmount do
-            if Remotes and Remotes:FindFirstChild("CollectSlot") then
-                pcall(function() Remotes.CollectSlot:FireServer(i) end)
-            end
+            fireRemote("CollectSlot", i)
             task.wait(0.1)
         end
         WindUI:Notify({ Title = "Action", Content = "Collected Slots Manually", Duration = 2 })
-    end 
+    end,
 })
-ActionSec:Button({ 
-    Title = "Claim Gems Once", 
-    Desc = "Manually claim all index gems.",
-    Callback = function() 
-        if Remotes and Remotes:FindFirstChild("ClaimAllIndexGems") then
-            pcall(function() Remotes.ClaimAllIndexGems:FireServer() end) 
-            WindUI:Notify({ Title = "Action", Content = "Claimed All Gems", Duration = 2 })
-        end
-    end 
+FarmActionSec:Button({
+    Title = "Claim Gems Once", Desc = "Manually claim all index gems.",
+    Callback = function()
+        fireRemote("ClaimAllIndexGems")
+        WindUI:Notify({ Title = "Action", Content = "Claimed All Gems", Duration = 2 })
+    end,
 })
-ActionSec:Button({ 
-    Title = "Equip Best Cards", 
-    Desc = "Manually equip your strongest team.",
-    Callback = function() 
-        EquipBestCards() 
+FarmActionSec:Button({
+    Title = "Equip Best Cards", Desc = "Manually equip your strongest team.",
+    Callback = function()
+        EquipBestCards()
         WindUI:Notify({ Title = "Action", Content = "Equipped Best Cards", Duration = 2 })
-    end 
+    end,
 })
-ActionSec:Button({ 
-    Title = "Rebirth Instantly", 
-    Desc = "Force rebirth if you have enough cash.",
-    Callback = function() 
-        if Remotes and Remotes:FindFirstChild("Rebirth") then
-            pcall(function() Remotes.Rebirth:FireServer() end) 
-            WindUI:Notify({ Title = "Action", Content = "Attempted Rebirth", Duration = 2 })
-        end
-    end 
+FarmActionSec:Button({
+    Title = "Rebirth Instantly", Desc = "Force rebirth if you have enough cash.",
+    Callback = function()
+        fireRemote("Rebirth")
+        WindUI:Notify({ Title = "Action", Content = "Attempted Rebirth", Duration = 2 })
+    end,
 })
 
--- == SPIN TAB ==
-local SpinSec = Tabs.Spin:Section({ Title = "Spin Wheel Automation", Opened = true })
+-- ============================================
+-- 14) SPIN WHEEL TAB
+-- ============================================
+local SpinAutoSec = Tabs.Spin:Section({ Title = "Spin Wheel Automation", Opened = true })
 
-SpinSec:Toggle({ 
-    Flag = "Tgl_AutoSpinWheel", 
-    Title = "Auto Spin Wheel", 
+SpinAutoSec:Toggle({
+    Flag = "Tgl_AutoSpinWheel", Title = "Auto Spin Wheel",
     Desc = "Continuously spin the wheel.",
-    Default = false, 
-    Callback = function(s) Config.AutoSpinWheel = s end 
+    Default = false, Callback = function(s) Config.AutoSpinWheel = s end,
 })
-
-SpinSec:Toggle({ 
-    Flag = "Tgl_AutoClaimFreeWheel", 
-    Title = "Auto Claim Free Wheel", 
+SpinAutoSec:Toggle({
+    Flag = "Tgl_AutoClaimFreeWheel", Title = "Auto Claim Free Wheel",
     Desc = "Automatically claim free wheel spins.",
-    Default = false, 
-    Callback = function(s) Config.AutoClaimFreeWheel = s end 
+    Default = false, Callback = function(s) Config.AutoClaimFreeWheel = s end,
 })
 
-local SpinManualSec = Tabs.Spin:Section({ Title = "Manual Actions", Opened = true })
+local SpinManualSec = Tabs.Spin:Section({ Title = "Manual Actions", Opened = false })
 
-SpinManualSec:Button({ 
-    Title = "Spin Wheel Once", 
-    Desc = "Manually spin the wheel.",
-    Callback = function() 
-        pcall(function()
-            local args = { "spin" }
-            game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
-        end)
-    end 
+SpinManualSec:Button({
+    Title = "Spin Wheel Once", Desc = "Manually spin the wheel.",
+    Callback = function() fireRemote("SpinWheel", "spin") end,
+})
+SpinManualSec:Button({
+    Title = "Claim Free Spin Once", Desc = "Manually claim free wheel spin.",
+    Callback = function() fireRemote("SpinWheel", "claim_free") end,
 })
 
-SpinManualSec:Button({ 
-    Title = "Claim Free Spin Once", 
-    Desc = "Manually claim free wheel spin.",
-    Callback = function() 
-        pcall(function()
-            local args = { "claim_free" }
-            game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
-        end)
-    end 
-})
+-- ============================================
+-- 15) CRAFT SHOP TAB
+-- ============================================
+local CraftAutoSec = Tabs.Craft:Section({ Title = "Auto Crafting", Opened = true })
 
--- == CRAFT SHOP TAB ==
-local CraftSec = Tabs.Craft:Section({ Title = "Auto Crafting", Opened = true })
-
-CraftSec:Paragraph({
+CraftAutoSec:Paragraph({
     Title = "Crafting Automation",
-    Desc = "Automatically craft your desired items. New shop items will be detected automatically in the background."
+    Desc  = "Automatically craft your desired items. New items are detected in the background.",
 })
 
-local CraftableItemsList = {"Golden Boot", "Champions League", "Ballon d'Or", "Eternal Crown"}
+local CraftableItemsList = { "Golden Boot", "Champions League", "Ballon d'Or", "Eternal Crown" }
 
 for _, itemName in ipairs(CraftableItemsList) do
-    CraftSec:Toggle({
-        Flag = "Tgl_Craft_" .. string.gsub(itemName, " ", ""),
-        Title = "Auto Craft: " .. itemName,
-        Desc = "Automatically crafts " .. itemName .. " when possible.",
-        Default = false,
-        Callback = function(state)
-            Config.AutoCraftItems[itemName] = state
-        end
+    CraftAutoSec:Toggle({
+        Flag     = "Tgl_Craft_" .. string.gsub(itemName, "%W", ""),
+        Title    = "Auto Craft: " .. itemName,
+        Desc     = "Automatically crafts " .. itemName .. " when possible.",
+        Default  = false,
+        Callback = function(state) Config.AutoCraftItems[itemName] = state end,
     })
 end
 
@@ -302,27 +467,34 @@ local CraftManualSec = Tabs.Craft:Section({ Title = "Manual Actions", Opened = f
 for _, itemName in ipairs(CraftableItemsList) do
     CraftManualSec:Button({
         Title = "Craft " .. itemName .. " Once",
-        Desc = "Manually craft one " .. itemName .. ".",
+        Desc  = "Manually craft one " .. itemName .. ".",
         Callback = function()
-            if Remotes and Remotes:FindFirstChild("CraftTrophy") then
-                pcall(function() Remotes.CraftTrophy:FireServer(itemName) end)
-                WindUI:Notify({ Title = "Crafting", Content = "Attempted to craft: " .. itemName, Duration = 2 })
-            end
-        end
+            fireRemote("CraftTrophy", itemName)
+            WindUI:Notify({ Title = "Crafting", Content = "Attempted to craft: " .. itemName, Duration = 2 })
+        end,
     })
 end
 
--- Silent Background Scanner for new items
+-- Background scanner for new craftable items
 task.spawn(function()
     while true do
-        task.wait(10) -- Scan every 10 seconds
+        task.wait(10)
         pcall(function()
-            local scrollFrame = game:GetService("Players").LocalPlayer.PlayerGui.CraftShop.Frame.Items.ScrollingFrame
+            local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+            if not pgui then return end
+            local craftShop = pgui:FindFirstChild("CraftShop")
+            if not craftShop then return end
+            local frame = craftShop:FindFirstChild("Frame")
+            if not frame then return end
+            local items = frame:FindFirstChild("Items")
+            if not items then return end
+            local scrollFrame = items:FindFirstChild("ScrollingFrame")
+            if not scrollFrame then return end
+
             for _, item in ipairs(scrollFrame:GetChildren()) do
                 if item:IsA("Frame") and item:FindFirstChild("PurchaseSection") then
                     if not table.find(CraftableItemsList, item.Name) then
                         table.insert(CraftableItemsList, item.Name)
-                        -- New item found, the background loop will now handle it if it's in Config.AutoCraftItems
                     end
                 end
             end
@@ -330,107 +502,98 @@ task.spawn(function()
     end
 end)
 
--- == GEM SHOP TAB ==
-local GemSec = Tabs.GemShop:Section({ Title = "Auto Gem Shop", Opened = true })
+-- ============================================
+-- 16) GEM SHOP TAB (Auto-Detecting)
+-- ============================================
+local GemAutoSec = Tabs.GemShop:Section({ Title = "Auto Gem Shop", Opened = true })
 
-GemSec:Paragraph({
-    Title = "Gem Shop Automation",
-    Desc = "Automatically purchase your desired items using Gems from the Gem Shop."
+GemAutoSec:Paragraph({
+    Title = "Auto-Detect Enabled",
+    Desc  = "Gem Shop items are scanned automatically every 15 seconds. Open the Gem Shop once to detect all items!",
 })
 
-local GemShopItemsList = {
-    {Id = "AutoEquipBest", Display = "Auto Equip Best"},
-    {Id = "AutoSkip", Display = "Auto Skip"},
-    {Id = "ExtraBankSlots", Display = "Extra Bank Slots"},
-    {Id = "Inventory500", Display = "Inventory +500"}
-}
+local initialGemItems = UpdateGemShopList()
 
-for _, item in ipairs(GemShopItemsList) do
-    GemSec:Toggle({
-        Flag = "Tgl_Gem_" .. item.Id,
-        Title = "Auto Buy: " .. item.Display,
-        Desc = "Automatically buy " .. item.Display .. " when it is affordable.",
-        Default = false,
-        Callback = function(state)
-            Config.AutoBuyGemItems[item.Id] = state
+GemDropdownRef = GemAutoSec:Dropdown({
+    Flag     = "Drop_SelectGemItems",
+    Title    = "Select Items to Auto-Buy",
+    Desc     = "Choose which Gem Shop items to purchase automatically.",
+    Values   = initialGemItems,
+    Value    = {},
+    Multi    = true,
+    Callback = function(selected)
+        -- Reset all
+        for k, _ in pairs(Config.AutoBuyGemItems) do
+            Config.AutoBuyGemItems[k] = false
         end
-    })
-end
+        -- Enable selected
+        if type(selected) == "table" then
+            for _, name in ipairs(selected) do
+                Config.AutoBuyGemItems[name] = true
+            end
+        elseif type(selected) == "string" then
+            Config.AutoBuyGemItems[selected] = true
+        end
+    end,
+})
 
-GemSec:Toggle({
-    Flag = "Tgl_Gem_LuckyItem",
-    Title = "Auto Buy: Today's Lucky Item",
-    Desc = "Automatically checks the rotating lucky item in the shop and buys it.",
+GemAutoSec:Toggle({
+    Flag = "Tgl_AutoBuyGem", Title = "Auto Buy Selected Gem Items",
+    Desc = "Continuously purchase the selected Gem Shop items.",
     Default = false,
-    Callback = function(state)
-        Config.AutoBuyGemItems["LuckyItem"] = state
-    end
+    Callback = function(s)
+        Config.AutoBuyGem = s
+        if s then
+            local count = 0
+            for _, on in pairs(Config.AutoBuyGemItems) do if on then count += 1 end end
+            WindUI:Notify({ Title = "Auto Buy Gems", Content = "Enabled — buying " .. tostring(count) .. " selected item(s) each loop.", Duration = 3 })
+        end
+    end,
 })
 
 local GemManualSec = Tabs.GemShop:Section({ Title = "Manual Actions", Opened = false })
 
-for _, item in ipairs(GemShopItemsList) do
-    GemManualSec:Button({
-        Title = "Buy " .. item.Display .. " Once",
-        Desc = "Manually buy one " .. item.Display .. ".",
-        Callback = function()
-            print("SpectreWare: Attempting to buy " .. item.Id)
-            local targetRemote = Remotes:FindFirstChild("BuyGemShopItem")
-            if targetRemote then
-                local success, err = pcall(function()
-                    targetRemote:FireServer(item.Id)
-                end)
-                if success then
-                    print("SpectreWare: Successfully fired BuyGemShopItem for " .. item.Id)
-                    WindUI:Notify({ Title = "Gem Shop", Content = "Attempted to buy: " .. item.Display, Duration = 2 })
-                else
-                    warn("SpectreWare: Error firing remote: " .. tostring(err))
-                end
-            else
-                warn("SpectreWare: BuyGemShopItem remote not found in Remotes folder!")
-                WindUI:Notify({ Title = "Error", Content = "BuyGemShopItem remote not found!", Duration = 3 })
-            end
-        end
-    })
-end
-
 GemManualSec:Button({
-    Title = "Buy Today's Lucky Item Once",
-    Desc = "Reads the current lucky item name from the GUI and buys it.",
+    Title = "Buy All Selected Once",
+    Desc  = "Manually buy each selected Gem Shop item once.",
     Callback = function()
-        if Remotes and Remotes:FindFirstChild("BuyGemShopItem") then
-            local fired = false
-            pcall(function()
-                local pgui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui", 2)
-                local itemName = pgui.GemShop.Frame.Main.ScrollingFrame.LuckyItem.Item.Title.Text
-                if itemName and itemName ~= "" then
-                    Remotes.BuyGemShopItem:FireServer(itemName)
-                    WindUI:Notify({ Title = "Gem Shop", Content = "Attempted to buy Lucky Item: " .. itemName, Duration = 2 })
-                    fired = true
-                end
-            end)
-            
-            if not fired then
-                WindUI:Notify({ Title = "Gem Shop Error", Content = "Could not find the UI elements! Please open the Gem Shop manually first so the game loads the item names.", Duration = 4 })
+        local bought = 0
+        for itemName, on in pairs(Config.AutoBuyGemItems) do
+            if on then
+                if fireRemote("BuyGemShopItem", string.lower(itemName)) then bought += 1 end
             end
-        else
-            WindUI:Notify({ Title = "Error", Content = "BuyGemShopItem remote not found!", Duration = 3 })
         end
-    end
+        WindUI:Notify({ Title = "Gem Shop", Content = "Attempted to buy " .. tostring(bought) .. " items.", Duration = 2 })
+    end,
+})
+GemManualSec:Button({
+    Title = "Force Rescan Gem Shop",
+    Desc  = "Manually trigger a Gem Shop scan right now.",
+    Callback = function()
+        local items = UpdateGemShopList()
+        WindUI:Notify({ Title = "Gem Shop", Content = "Found " .. tostring(#items) .. " items.", Duration = 2 })
+    end,
 })
 
--- == PACKS TAB ==
-local PackSec = Tabs.Packs:Section({ Title = "Packs Configuration", Opened = true })
+-- ============================================
+-- 17) PACKS & CRATES TAB (Auto-Detecting)
+-- ============================================
+local PackConfigSec = Tabs.Packs:Section({ Title = "Packs Configuration", Opened = true })
 
-local FullPackList = {"Bronze", "Silver", "Gold", "Platinum", "Diamond", "Legendary", "Toxic", "Shadow", "Infernal", "Corrupted", "Cosmic", "Eclipse", "Hades", "Heaven", "Chaos", "Ordain", "Alpha", "Omega", "Genesis", "Abyssal", "Enigma","Oracle","Wither","Bloom"}
+PackConfigSec:Paragraph({
+    Title = "Auto-Detect Enabled",
+    Desc  = "New packs are scanned automatically every 15 seconds from the PackShop GUI. You no longer need to update the list manually!",
+})
 
-PackSec:Dropdown({
-    Flag = "Drop_SelectPacks",
-    Title = "Select Target Packs",
-    Desc = "Choose which packs to buy and open.",
-    Values = FullPackList,
-    Value = {"Gold"},
-    Multi = true,
+local initialPacks = UpdatePackList()
+
+PackDropdownRef = PackConfigSec:Dropdown({
+    Flag     = "Drop_SelectPacks",
+    Title    = "Select Target Packs",
+    Desc     = "Choose which packs to buy and open.",
+    Values   = initialPacks,
+    Value    = { "Gold" },
+    Multi    = true,
     Callback = function(selected)
         local newSelections = {}
         if type(selected) == "table" then
@@ -439,189 +602,107 @@ PackSec:Dropdown({
             newSelections[selected] = true
         end
         Config.SelectedPacks = newSelections
-    end
+    end,
 })
 
-PackSec:Toggle({ 
-    Flag = "Tgl_AutoBuyPack", 
-    Title = "Auto Buy Selected Packs", 
+PackConfigSec:Toggle({
+    Flag = "Tgl_AutoBuyPack", Title = "Auto Buy Selected Packs",
     Desc = "Continuously spend cash on chosen packs.",
-    Default = false, 
-    Callback = function(s) Config.AutoBuyPack = s end 
+    Default = false,
+    Callback = function(s)
+        Config.AutoBuyPack = s
+        if s then
+            local count = 0
+            for _, on in pairs(Config.SelectedPacks) do if on then count += 1 end end
+            WindUI:Notify({ Title = "Auto Buy Packs", Content = "Enabled — buying " .. tostring(count) .. " selected pack(s) each loop.", Duration = 3 })
+        end
+    end,
 })
-PackSec:Toggle({ 
-    Flag = "Tgl_AutoOpenPack", 
-    Title = "Auto Open Selected Packs", 
+PackConfigSec:Toggle({
+    Flag = "Tgl_AutoOpenPack", Title = "Auto Open Selected Packs",
     Desc = "Continuously open purchased packs.",
-    Default = false, 
-    Callback = function(s) Config.AutoOpenPack = s end 
+    Default = false, Callback = function(s) Config.AutoOpenPack = s end,
 })
 
 local PackManualSec = Tabs.Packs:Section({ Title = "Manual Management", Opened = false })
-PackManualSec:Button({ 
-    Title = "Buy Selected Packs Once", 
+
+PackManualSec:Button({
+    Title = "Buy Selected Packs Once",
+    Desc  = "One-time purchase of all selected packs.",
     Callback = function()
         local bought = 0
         for pack, on in pairs(Config.SelectedPacks) do
-            if on and Remotes and Remotes:FindFirstChild("BuyPack") then 
-                pcall(function() Remotes.BuyPack:FireServer(pack) end) 
-                bought += 1
+            if on then
+                if fireRemote("BuyPack", pack) then bought += 1 end
             end
         end
         WindUI:Notify({ Title = "Packs", Content = "Bought " .. tostring(bought) .. " selected packs.", Duration = 2 })
-    end 
+    end,
 })
-PackManualSec:Button({ 
-    Title = "Open Selected Packs Once", 
+PackManualSec:Button({
+    Title = "Open Selected Packs Once",
+    Desc  = "One-time opening of all selected packs.",
     Callback = function()
         local opened = 0
         for pack, on in pairs(Config.SelectedPacks) do
-            if on and Remotes and Remotes:FindFirstChild("OpenPack") then 
-                pcall(function() Remotes.OpenPack:FireServer(pack) end) 
-                opened += 1
+            if on then
+                if fireRemote("OpenPack", pack) then opened += 1 end
             end
         end
         WindUI:Notify({ Title = "Packs", Content = "Opened " .. tostring(opened) .. " selected packs.", Duration = 2 })
-    end 
+    end,
+})
+PackManualSec:Button({
+    Title = "Force Rescan Packs",
+    Desc  = "Manually trigger a pack scan right now.",
+    Callback = function()
+        local packs = UpdatePackList()
+        WindUI:Notify({ Title = "Packs", Content = "Found " .. tostring(#packs) .. " packs.", Duration = 2 })
+    end,
 })
 
--- == SELL TAB ==
+-- Background pack + gem shop scanner (every 15 seconds)
+task.spawn(function()
+    task.wait(5)
+    while true do
+        pcall(function() UpdatePackList() end)
+        pcall(function() UpdateGemShopList() end)
+        task.wait(15)
+    end
+end)
+
+-- ============================================
+-- 18) AUTO SELL TAB
+-- ============================================
 local SellSec = Tabs.Sell:Section({ Title = "Auto Sell Filter", Opened = true })
 
 SellSec:Paragraph({
-    Title = "How auto sell works",
-    Desc = "Enable the rarities you want to instantly sell when obtained to keep your inventory clean."
+    Title = "How Auto Sell Works",
+    Desc  = "Enable rarities you want to instantly sell when obtained to keep your inventory clean.",
 })
 
 local SellRarities = {
-    "Bronze", "Silver", "Gold", "Legendary", "Mythic", 
-    "Azure Zenith", "Crimson Zenith", "Divine", "Primordial", 
-    "Oblivion", "Eternity"
+    "Bronze", "Silver", "Gold", "Legendary", "Mythic",
+    "Azure Zenith", "Crimson Zenith", "Divine", "Primordial",
+    "Oblivion", "Eternity",
 }
 
 for _, rarity in ipairs(SellRarities) do
     SellSec:Toggle({
-        Flag = "Tgl_AutoSell_" .. string.gsub(rarity, " ", ""),
-        Title = "Sell " .. rarity .. " Cards",
-        Default = false,
-        Callback = function(state)
-            if Remotes and Remotes:FindFirstChild("UpdateAutoSell") then
-                pcall(function()
-                    Remotes.UpdateAutoSell:FireServer(rarity, state)
-                end)
-            end
-        end
+        Flag     = "Tgl_AutoSell_" .. string.gsub(rarity, "%W", ""),
+        Title    = "Sell " .. rarity .. " Cards",
+        Default  = false,
+        Callback = function(state) fireRemote("UpdateAutoSell", rarity, state) end,
     })
 end
 
--- == BACKGROUND LOOP ==
-task.spawn(function()
-    while true do
-        task.wait(Config.LoopDelay)
-
-        -- 1. Collect Slots
-        if isOn("AutoCollect") then
-            for i = 1, Config.SlotAmount do
-                if not isOn("AutoCollect") then break end
-                if Remotes and Remotes:FindFirstChild("CollectSlot") then
-                    pcall(function() Remotes.CollectSlot:FireServer(i) end)
-                end
-                task.wait(0.1)
-            end
-        end
-
-        -- 2. Claim Gems
-        if isOn("AutoClaimGems") and Remotes and Remotes:FindFirstChild("ClaimAllIndexGems") then
-            pcall(function() Remotes.ClaimAllIndexGems:FireServer() end)
-        end
-
-        -- 3. Buy Packs
-        if isOn("AutoBuyPack") and Remotes and Remotes:FindFirstChild("BuyPack") then
-            for pack, on in pairs(Config.SelectedPacks) do
-                if on then pcall(function() Remotes.BuyPack:FireServer(pack) end) end
-            end
-        end
-
-        -- 4. Open Packs
-        if isOn("AutoOpenPack") and Remotes and Remotes:FindFirstChild("OpenPack") then
-            for pack, on in pairs(Config.SelectedPacks) do
-                if on then pcall(function() Remotes.OpenPack:FireServer(pack) end) end
-            end
-        end
-
-        -- 5. Equip Best
-        if isOn("AutoEquipBest") then
-            EquipBestCards()
-        end
-
-        -- 6. Rebirth
-        if isOn("AutoRebirth") and Remotes and Remotes:FindFirstChild("Rebirth") then
-            pcall(function() Remotes.Rebirth:FireServer() end)
-        end
-
-        -- 7. Spin Wheel
-        if isOn("AutoSpinWheel") then
-            pcall(function()
-                local args = { "spin" }
-                game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
-            end)
-        end
-
-        -- 8. Claim Free Wheel
-        if isOn("AutoClaimFreeWheel") then
-            pcall(function()
-                local args = { "claim_free" }
-                game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("SpinWheel"):FireServer(unpack(args))
-            end)
-        end
-
-        -- 9. Auto Craft via Remote
-        if Remotes and Remotes:FindFirstChild("CraftTrophy") then
-            for itemName, isCrafting in pairs(Config.AutoCraftItems) do
-                if isCrafting then
-                    pcall(function()
-                        Remotes.CraftTrophy:FireServer(itemName)
-                    end)
-                end
-            end
-        end
-
-        -- 10. Auto Buy Gem Shop Items
-        if Remotes and Remotes:FindFirstChild("BuyGemShopItem") then
-            -- 10.1 Static Items
-            local gemItems = {
-                {Id = "AutoEquipBest", Display = "Auto Equip Best"},
-                {Id = "AutoSkip", Display = "Auto Skip"},
-                {Id = "ExtraBankSlots", Display = "Extra Bank Slots"},
-                {Id = "Inventory500", Display = "Inventory +500"}
-            }
-            for _, item in ipairs(gemItems) do
-                if Config.AutoBuyGemItems[item.Id] then
-                    pcall(function()
-                        Remotes.BuyGemShopItem:FireServer(item.Id)
-                    end)
-                end
-            end
-
-            -- 10.2 Dynamic Lucky Item
-            if Config.AutoBuyGemItems["LuckyItem"] then
-                pcall(function()
-                    local targetText = game:GetService("Players").LocalPlayer.PlayerGui.GemShop.Frame.Main.ScrollingFrame.LuckyItem.Item.Title.Text
-                    if targetText and targetText ~= "" then
-                        Remotes.BuyGemShopItem:FireServer(targetText)
-                    end
-                end)
-            end
-        end
-    end
-end)
-
--- == MISC TAB ==
+-- ============================================
+-- 19) LOCAL PLAYER TAB
+-- ============================================
 local MiscSec = Tabs.Misc:Section({ Title = "Player Modifications", Opened = true })
 
 MiscSec:Toggle({
-    Flag = "Tgl_AntiAFK",
-    Title = "Anti-AFK",
+    Flag = "Tgl_AntiAFK", Title = "Anti-AFK",
     Desc = "Prevents getting kicked for being idle (20 mins by Roblox).",
     Default = false,
     Callback = function(state)
@@ -629,57 +710,63 @@ MiscSec:Toggle({
         if state then
             pcall(function()
                 if not getgenv().AntiAFKConnection then
-                    local LocalPlayer = game:GetService("Players").LocalPlayer
                     getgenv().AntiAFKConnection = LocalPlayer.Idled:Connect(function()
                         if Config.AntiAFK then
                             local VirtualUser = game:GetService("VirtualUser")
-                            VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                            VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
                             task.wait(1)
-                            VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                            VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
                         end
                     end)
                 end
             end)
         end
-    end
+    end,
 })
-
-MiscSec:Slider({ 
-    Flag = "Sld_WalkSpeed",
-    Title = "WalkSpeed Override", 
+MiscSec:Slider({
+    Flag = "Sld_WalkSpeed", Title = "WalkSpeed Override",
     Desc = "Change your character's run speed.",
-    Step = 1, 
-    Value = {Min = 16, Max = 150, Default = 16}, 
-    Callback = function(v) 
-        pcall(function() game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = v end) 
-    end 
+    Step = 1, Value = { Min = 16, Max = 150, Default = 16 },
+    Callback = function(v)
+        pcall(function()
+            local char = LocalPlayer.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then hum.WalkSpeed = v end
+            end
+        end)
+    end,
 })
-
-MiscSec:Slider({ 
-    Flag = "Sld_JumpPower",
-    Title = "JumpPower Override", 
+MiscSec:Slider({
+    Flag = "Sld_JumpPower", Title = "JumpPower Override",
     Desc = "Change your character's jump height.",
-    Step = 1, 
-    Value = {Min = 50, Max = 500, Default = 50}, 
-    Callback = function(v) 
-        pcall(function() game.Players.LocalPlayer.Character.Humanoid.JumpPower = v end) 
-    end 
+    Step = 1, Value = { Min = 50, Max = 500, Default = 50 },
+    Callback = function(v)
+        pcall(function()
+            local char = LocalPlayer.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then hum.JumpPower = v end
+            end
+        end)
+    end,
 })
 
--- == SETTINGS TAB ==
+-- ============================================
+-- 20) SETTINGS TAB
+-- ============================================
 local UISec = Tabs.Settings:Section({ Title = "UI Options", Opened = true })
 
-UISec:Keybind({ 
-    Flag = "Keybind_ToggleMenu",
-    Title = "Toggle Menu Key", 
+UISec:Keybind({
+    Flag = "Keybind_ToggleMenu", Title = "Toggle Menu Key",
     Desc = "Hide or show the UI.",
-    Value = "LeftControl", 
-    Callback = function(k) 
-        if Window.SetToggleKey then Window:SetToggleKey(Enum.KeyCode[k] or Enum.KeyCode.LeftControl) end 
-    end 
+    Value = "LeftControl",
+    Callback = function(k)
+        if Window.SetToggleKey then
+            Window:SetToggleKey(Enum.KeyCode[k] or Enum.KeyCode.LeftControl)
+        end
+    end,
 })
-
-
 
 local AvailableThemes = {}
 for themeName, _ in pairs(WindUI.Themes) do
@@ -690,21 +777,97 @@ if not table.find(AvailableThemes, "SpectreTheme") then
 end
 
 UISec:Dropdown({
-    Flag = "Drop_Theme",
-    Title = "Select Interface Theme",
-    Desc = "Change the color palette of the menu.",
-    Values = AvailableThemes,
-    Value = "SpectreTheme",
+    Flag     = "Drop_Theme",
+    Title    = "Select Interface Theme",
+    Desc     = "Change the color palette of the menu.",
+    Values   = AvailableThemes,
+    Value    = "SpectreTheme",
     Callback = function(themeName)
         pcall(function() WindUI:SetTheme(themeName) end)
-    end
+    end,
 })
 
+-- ============================================
+-- 21) BACKGROUND AUTOMATION LOOP
+-- ============================================
+task.spawn(function()
+    while true do
+        task.wait(Config.LoopDelay)
+
+        -- 1. Collect Slots
+        if isOn("AutoCollect") then
+            for i = 1, Config.SlotAmount do
+                if not isOn("AutoCollect") then break end
+                fireRemote("CollectSlot", i)
+                task.wait(0.1)
+            end
+        end
+
+        -- 2. Claim Gems
+        if isOn("AutoClaimGems") then
+            fireRemote("ClaimAllIndexGems")
+        end
+
+        -- 3. Buy Packs
+        if isOn("AutoBuyPack") then
+            for pack, on in pairs(Config.SelectedPacks) do
+                if on then fireRemote("BuyPack", pack) end
+            end
+        end
+
+        -- 4. Open Packs
+        if isOn("AutoOpenPack") then
+            for pack, on in pairs(Config.SelectedPacks) do
+                if on then fireRemote("OpenPack", pack) end
+            end
+        end
+
+        -- 5. Equip Best
+        if isOn("AutoEquipBest") then
+            EquipBestCards()
+        end
+
+        -- 6. Rebirth
+        if isOn("AutoRebirth") then
+            fireRemote("Rebirth")
+        end
+
+        -- 7. Spin Wheel
+        if isOn("AutoSpinWheel") then
+            fireRemote("SpinWheel", "spin")
+        end
+
+        -- 8. Claim Free Wheel
+        if isOn("AutoClaimFreeWheel") then
+            fireRemote("SpinWheel", "claim_free")
+        end
+
+        -- 9. Auto Craft
+        for itemName, isCrafting in pairs(Config.AutoCraftItems) do
+            if isCrafting then
+                fireRemote("CraftTrophy", itemName)
+            end
+        end
+
+        -- 10. Auto Buy Gem Shop Items (dynamic list)
+        if isOn("AutoBuyGem") then
+            for itemName, on in pairs(Config.AutoBuyGemItems) do
+                if on then
+                    fireRemote("BuyGemShopItem", string.lower(itemName))
+                end
+            end
+        end
+    end
+end)
+
+-- ============================================
+-- 22) FINAL SETUP
+-- ============================================
 Tabs.Home:Select()
+
 WindUI:Notify({ Title = "SpectreWare Loaded", Content = "Injected successfully with SpectreTheme!", Duration = 5 })
 
--- ===== System Settings (Auto Save/Load) =====
-
+-- Auto Save/Load
 local ConfigManager = Window.ConfigManager
 if ConfigManager then
     pcall(function()
