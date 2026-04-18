@@ -90,6 +90,7 @@ local Config = {
     AutoSpinWheel = false,
     AutoClaimFreeWheel = false,
     AutoCraftItems = {},
+    AutoCraft = false,
     AutoBuyGemItems = {},
     AutoBuyGem = false,
 }
@@ -255,6 +256,222 @@ local FallbackGemItems = {
 }
 for _, g in ipairs(FallbackGemItems) do
     KnownGemItems[g] = true
+end
+
+-- ============================================
+-- 9.5) DYNAMIC CRAFT SHOP DETECTION (Real-time, v2)
+-- Path: PlayerGui.CraftShop.*.ScrollingFrame.[ItemName]
+-- ============================================
+local KnownCraftItems  = {}
+local CraftDropdownRef = nil
+local CraftScrollRef   = nil
+local CraftConnections = {}
+local PGuiConnections  = {}
+
+-- 🧹 ชื่อที่ไม่ใช่ item จริง ๆ (UI helpers)
+local CRAFT_NAME_BLACKLIST = {
+    Start = true, ["End"] = true, Padding = true, Template = true,
+    Header = true, Footer = true, Title = true, Divider = true,
+    Spacer = true, Background = true,
+}
+
+-- 🔍 ตรวจว่าเป็น item frame จริงหรือไม่ (ยืดหยุ่นกว่าเดิม)
+local function isValidCraftEntry(child)
+    if not child or not child:IsA("GuiObject") then return false end
+    if IsUILayoutObject(child) then return false end
+    local name = child.Name
+    if not name or name == "" then return false end
+    if CRAFT_NAME_BLACKLIST[name] then return false end
+    -- ยอมรับทุก Frame/ImageButton/TextButton ที่มีลูกเป็น GuiObject อย่างน้อย 1 ตัว
+    for _, d in ipairs(child:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("ImageButton") then
+            return true
+        end
+    end
+    return false
+end
+
+local function PushCraftItem(name)
+    if not name or name == "" then return false end
+    if CRAFT_NAME_BLACKLIST[name] then return false end
+    if KnownCraftItems[name] then return false end
+    KnownCraftItems[name] = true
+    return true
+end
+
+local function RefreshCraftDropdown()
+    local sorted = {}
+    for name, _ in pairs(KnownCraftItems) do
+        table.insert(sorted, name)
+    end
+    table.sort(sorted)
+    if CraftDropdownRef then
+        pcall(function()
+            if CraftDropdownRef.SetValues then
+                CraftDropdownRef:SetValues(sorted)
+            elseif CraftDropdownRef.Refresh then
+                CraftDropdownRef:Refresh(sorted)
+            end
+        end)
+    end
+    return sorted
+end
+
+-- 🕵️‍♂️ หา ScrollingFrame ของ CraftShop (รองรับการเปลี่ยนโครงสร้าง)
+local function FindCraftScroll()
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui"); if not pgui then return nil end
+    local craftShop = pgui:FindFirstChild("CraftShop");   if not craftShop then return nil end
+    -- หา ScrollingFrame ที่มีลูกเยอะสุด (น่าจะเป็นช่องรายการหลัก)
+    local best, bestCount = nil, -1
+    for _, d in ipairs(craftShop:GetDescendants()) do
+        if d:IsA("ScrollingFrame") then
+            local c = #d:GetChildren()
+            if c > bestCount then
+                best, bestCount = d, c
+            end
+        end
+    end
+    return best
+end
+
+local function ScanForCraftItems()
+    local found = {}
+    pcall(function()
+        local scroll = FindCraftScroll()
+        if not scroll then return end
+        CraftScrollRef = scroll
+        for _, child in ipairs(scroll:GetChildren()) do
+            if isValidCraftEntry(child) then
+                found[child.Name] = true
+            end
+        end
+    end)
+    return found
+end
+
+local function UpdateCraftList(silent)
+    local scanned = ScanForCraftItems()
+    local addedNames = {}
+    for name, _ in pairs(scanned) do
+        if PushCraftItem(name) then
+            table.insert(addedNames, name)
+        end
+    end
+    local list = RefreshCraftDropdown()
+    if (not silent) and #addedNames > 0 then
+        pcall(function()
+            WindUI:Notify({
+                Title   = "Craft Shop",
+                Content = "🆕 New: " .. table.concat(addedNames, ", "),
+                Duration = 3,
+            })
+        end)
+    end
+    return list
+end
+
+-- 🧯 เคลียร์ connection เก่าทิ้ง
+local function DisconnectAll(list)
+    for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end
+    table.clear(list)
+end
+
+-- 🔌 ผูก listener แบบ real-time กับ ScrollingFrame
+local function BindCraftScrollListener()
+    local scroll = FindCraftScroll()
+    if not scroll then return false end
+    CraftScrollRef = scroll
+
+    DisconnectAll(CraftConnections)
+
+    -- ⭐ ใช้ DescendantAdded + delay เพื่อรอ frame populate
+    table.insert(CraftConnections, scroll.ChildAdded:Connect(function(child)
+        task.spawn(function()
+            -- รอให้ลูกของ item populate (สำคัญมาก!)
+            for _ = 1, 10 do
+                task.wait(0.15)
+                if isValidCraftEntry(child) then
+                    if PushCraftItem(child.Name) then
+                        RefreshCraftDropdown()
+                        pcall(function()
+                            WindUI:Notify({
+                                Title   = "Craft Shop",
+                                Content = "🆕 Detected: " .. child.Name,
+                                Duration = 2,
+                            })
+                        end)
+                    end
+                    return
+                end
+            end
+            -- fallback: ถ้าชื่อไม่ใช่ blacklist ก็เพิ่มเลย
+            if not CRAFT_NAME_BLACKLIST[child.Name]
+               and not IsUILayoutObject(child)
+               and child:IsA("GuiObject") then
+                if PushCraftItem(child.Name) then
+                    RefreshCraftDropdown()
+                end
+            end
+        end)
+    end))
+
+    -- ถ้า ScrollingFrame โดนลบ/replace → rebind ใหม่
+    table.insert(CraftConnections, scroll.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            CraftScrollRef = nil
+            task.wait(0.5)
+            BindCraftScrollListener()
+        end
+    end))
+
+    -- scan ทันทีหลัง bind
+    UpdateCraftList(true)
+    return true
+end
+
+-- 🧭 Watcher ระดับ PlayerGui — รองรับกรณี CraftShop โหลดทีหลัง หรือถูก rebuild
+task.spawn(function()
+    local pgui = LocalPlayer:WaitForChild("PlayerGui", 15)
+    if not pgui then return end
+
+    DisconnectAll(PGuiConnections)
+
+    local function tryBind()
+        UpdateCraftList(true)
+        BindCraftScrollListener()
+    end
+
+    tryBind()
+
+    -- ทุกครั้งที่มีอะไรใหม่โผล่ใน PlayerGui ให้ลอง rebind
+    table.insert(PGuiConnections, pgui.DescendantAdded:Connect(function(desc)
+        if not desc then return end
+        if desc.Name == "CraftShop"
+           or (desc:IsA("ScrollingFrame") and desc:FindFirstAncestor("CraftShop")) then
+            task.wait(0.5)
+            tryBind()
+        end
+    end))
+
+    -- 🔁 Heartbeat scan ทุก 10 วิ เผื่อ event ตกหล่น (safety net)
+    task.spawn(function()
+        while true do
+            task.wait(10)
+            if not CraftScrollRef or not CraftScrollRef.Parent then
+                BindCraftScrollListener()
+            else
+                UpdateCraftList(true)
+            end
+        end
+    end)
+end)
+
+-- 🌱 Seed fallback
+local FallbackCraftItems = {
+    "Golden Boot", "Champions League", "Ballon d'Or", "Eternal Crown",
+}
+for _, c in ipairs(FallbackCraftItems) do
+    KnownCraftItems[c] = true
 end
 
 -- ============================================
@@ -441,66 +658,77 @@ SpinManualSec:Button({
 })
 
 -- ============================================
--- 15) CRAFT SHOP TAB
+-- 15) CRAFT SHOP TAB (Auto-Detecting)
 -- ============================================
 local CraftAutoSec = Tabs.Craft:Section({ Title = "Auto Crafting", Opened = true })
 
 CraftAutoSec:Paragraph({
-    Title = "Crafting Automation",
-    Desc  = "Automatically craft your desired items. New items are detected in the background.",
+    Title = "Auto-Detect Enabled",
+    Desc  = "Craft Shop items are scanned automatically every 15 seconds. New items will appear here!",
 })
 
-local CraftableItemsList = { "Golden Boot", "Champions League", "Ballon d'Or", "Eternal Crown" }
+local initialCraftItems = UpdateCraftList()
 
-for _, itemName in ipairs(CraftableItemsList) do
-    CraftAutoSec:Toggle({
-        Flag     = "Tgl_Craft_" .. string.gsub(itemName, "%W", ""),
-        Title    = "Auto Craft: " .. itemName,
-        Desc     = "Automatically crafts " .. itemName .. " when possible.",
-        Default  = false,
-        Callback = function(state) Config.AutoCraftItems[itemName] = state end,
-    })
-end
+CraftDropdownRef = CraftAutoSec:Dropdown({
+    Flag     = "Drop_SelectCraftItems",
+    Title    = "Select Items to Auto-Craft",
+    Desc     = "Choose which items to craft automatically.",
+    Values   = initialCraftItems,
+    Value    = {},
+    Multi    = true,
+    Callback = function(selected)
+        -- Reset all
+        for k, _ in pairs(Config.AutoCraftItems) do
+            Config.AutoCraftItems[k] = false
+        end
+        -- Enable selected
+        if type(selected) == "table" then
+            for _, name in ipairs(selected) do
+                Config.AutoCraftItems[name] = true
+            end
+        elseif type(selected) == "string" then
+            Config.AutoCraftItems[selected] = true
+        end
+    end,
+})
+
+CraftAutoSec:Toggle({
+    Flag = "Tgl_AutoCraft", Title = "Auto Craft Selected Items",
+    Desc = "Continuously craft the selected items.",
+    Default = false,
+    Callback = function(s)
+        Config.AutoCraft = s
+        if s then
+            local count = 0
+            for _, on in pairs(Config.AutoCraftItems) do if on then count += 1 end end
+            WindUI:Notify({ Title = "Auto Craft", Content = "Enabled — crafting " .. tostring(count) .. " selected item(s) each loop.", Duration = 3 })
+        end
+    end,
+})
 
 local CraftManualSec = Tabs.Craft:Section({ Title = "Manual Actions", Opened = false })
 
-for _, itemName in ipairs(CraftableItemsList) do
-    CraftManualSec:Button({
-        Title = "Craft " .. itemName .. " Once",
-        Desc  = "Manually craft one " .. itemName .. ".",
-        Callback = function()
-            fireRemote("CraftTrophy", itemName)
-            WindUI:Notify({ Title = "Crafting", Content = "Attempted to craft: " .. itemName, Duration = 2 })
-        end,
-    })
-end
-
--- Background scanner for new craftable items
-task.spawn(function()
-    while true do
-        task.wait(10)
-        pcall(function()
-            local pgui = LocalPlayer:FindFirstChild("PlayerGui")
-            if not pgui then return end
-            local craftShop = pgui:FindFirstChild("CraftShop")
-            if not craftShop then return end
-            local frame = craftShop:FindFirstChild("Frame")
-            if not frame then return end
-            local items = frame:FindFirstChild("Items")
-            if not items then return end
-            local scrollFrame = items:FindFirstChild("ScrollingFrame")
-            if not scrollFrame then return end
-
-            for _, item in ipairs(scrollFrame:GetChildren()) do
-                if item:IsA("Frame") and item:FindFirstChild("PurchaseSection") then
-                    if not table.find(CraftableItemsList, item.Name) then
-                        table.insert(CraftableItemsList, item.Name)
-                    end
-                end
+CraftManualSec:Button({
+    Title = "Craft All Selected Once",
+    Desc  = "Manually craft each selected item once.",
+    Callback = function()
+        local crafted = 0
+        for itemName, on in pairs(Config.AutoCraftItems) do
+            if on then
+                if fireRemote("CraftTrophy", itemName) then crafted += 1 end
             end
-        end)
-    end
-end)
+        end
+        WindUI:Notify({ Title = "Craft Shop", Content = "Attempted to craft " .. tostring(crafted) .. " items.", Duration = 2 })
+    end,
+})
+CraftManualSec:Button({
+    Title = "Force Rescan Craft Shop",
+    Desc  = "Manually trigger a Craft Shop scan right now.",
+    Callback = function()
+        local items = UpdateCraftList()
+        WindUI:Notify({ Title = "Craft Shop", Content = "Found " .. tostring(#items) .. " items.", Duration = 2 })
+    end,
+})
 
 -- ============================================
 -- 16) GEM SHOP TAB (Auto-Detecting)
@@ -661,12 +889,13 @@ PackManualSec:Button({
     end,
 })
 
--- Background pack + gem shop scanner (every 15 seconds)
+-- Background pack, gem shop + craft shop scanner (every 15 seconds)
 task.spawn(function()
     task.wait(5)
     while true do
         pcall(function() UpdatePackList() end)
         pcall(function() UpdateGemShopList() end)
+        pcall(function() UpdateCraftList() end)
         task.wait(15)
     end
 end)
@@ -843,9 +1072,11 @@ task.spawn(function()
         end
 
         -- 9. Auto Craft
-        for itemName, isCrafting in pairs(Config.AutoCraftItems) do
-            if isCrafting then
-                fireRemote("CraftTrophy", itemName)
+        if isOn("AutoCraft") then
+            for itemName, isCrafting in pairs(Config.AutoCraftItems) do
+                if isCrafting then
+                    fireRemote("CraftTrophy", itemName)
+                end
             end
         end
 
